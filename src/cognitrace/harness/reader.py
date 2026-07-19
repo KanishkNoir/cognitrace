@@ -36,6 +36,16 @@ DEFAULT_JUDGE_MODEL = "gpt-4o"
 _MAX_ATTEMPTS = 3
 _BACKOFF_S = 2.0
 
+# Some Together-hosted models (DeepSeek-V4-Pro, GLM-5.2, Kimi-K2.x,
+# gpt-oss-*, MiniMax-M-series, ...) are reasoning models that spend hidden
+# "thinking" tokens before any visible answer. With no max_tokens cap (or
+# too small a one) they hit finish_reason="length" with EMPTY content --
+# which reads as a confident wrong verdict/answer, not an error, unless a
+# generous cap is set. Cheap to set generously: non-reasoning models (gpt-
+# 4o-mini, Llama-3.3-Turbo, ...) stop at their own short answer well below
+# this cap, so it costs nothing extra for them.
+_MAX_COMPLETION_TOKENS = 1024
+
 _READER_SYSTEM = (
     "You answer questions about a user based on their conversation history. "
     "Use ONLY the provided memory/context. Answer concisely with the specific "
@@ -146,6 +156,7 @@ def read_answer(question: str, context: str, model: str = DEFAULT_READER_MODEL,
                 messages=[{"role": "system", "content": _READER_SYSTEM},
                           {"role": "user", "content": user}],
                 temperature=0,
+                max_tokens=_MAX_COMPLETION_TOKENS,
                 **kwargs,
             )
             usage = getattr(resp, "usage", None)
@@ -220,6 +231,7 @@ def _judge_completion(prompt: str, model: str) -> str:
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
+        max_tokens=_MAX_COMPLETION_TOKENS,
     )
     return resp.choices[0].message.content or ""
 
