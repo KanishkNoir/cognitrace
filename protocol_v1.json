@@ -1,0 +1,13 @@
+{
+  "name": "pinned-v1",
+  "_note": "Anchor-lane protocol: reader/judge chosen for comparability with the peer-reviewed Mem0-paper numbers (arXiv 2504.19413). The hardened cross-family judge lane (claude-* judge) is pinned as pinned-v2 only AFTER adversarial judge validation publishes its confusion tables — until then any cross-family score is an estimate by construction. Any deviation from the fields below machine-labels a run 'estimate' (SPEC firewall).",
+  "reader_model": "gpt-4o-mini",
+  "judge_model": "gpt-4o",
+  "answer_keys": ["original"],
+  "seeds_required": 5,
+  "prompts": {
+    "reader_system": "901d4379b87b76190e070e5acdf09588882aabab6a7e8783c38fec1fc13db050",
+    "judge": "c2f1ded573e6c1e9f123ad8a479c4560e42d51823858e92f8f1e186aacb8c874",
+    "judge_abstention": "7cceb5b787c20e29f0253866b045aa66ef99b9d0a695244b2722b7142702f042"
+  }
+}

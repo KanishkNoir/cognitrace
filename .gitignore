@@ -1,0 +1,42 @@
+# Benchmark datasets (downloaded, never committed — see data/README.md)
+data/
+# Eval outputs (per-run JSON; publish curated reports instead)
+results/
+
+# Secrets
+.env
+.envrc
+
+# Python
+__pycache__/
+*.py[codz]
+*.egg-info/
+build/
+dist/
+.venv
+.pytest_cache/
+.pytest_tmp/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+
+# Model artifacts (Phase 2)
+models/
+checkpoints/
+*.onnx
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code session settings
+.claude/
+
+# Local agent/memory tool state (machine-specific; never publish)
+.memlora/
+.codex/
+.agents/
+.mcp.json
