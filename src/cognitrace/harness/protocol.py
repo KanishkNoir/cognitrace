@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import subprocess
 import time
 from dataclasses import dataclass
@@ -196,3 +197,108 @@ def evidence_recall(retrieved: list[str], gold: list[str], k: int) -> float | No
         return None
     top = set(retrieved[:k])
     return sum(1 for g in gold if g in top) / len(gold)
+
+
+# --- Statistical gate (design_scaffold.md A4: two noise floors) ------------
+#
+# Paired within-harness comparisons (same questions, same seeds, same judge)
+# use a paired bootstrap: resample question indices with replacement, so
+# each resample keeps A/B paired per question. A win needs BOTH a 95% CI
+# excluding zero AND >=3-point magnitude — bootstrap significance alone is
+# not enough at typical eval sizes (n~150-1000) to rule out a real-but-tiny
+# effect that ships as tuning noise a week later.
+#
+# Cross-lab comparisons (our number vs a number from someone else's harness,
+# judge, prompts, seeds) cannot be paired at all - confounds are unmeasured
+# - so the older, blunter 10-point floor stands instead.
+
+_CROSS_LAB_FLOOR_PTS = 10.0
+
+
+@dataclass
+class PairedGateResult:
+    n: int
+    diff_pts: float  # mean(a) - mean(b), in percentage points
+    ci_lo_pts: float
+    ci_hi_pts: float
+    n_resamples: int
+    magnitude_pts: float
+
+    @property
+    def significant(self) -> bool:
+        # 95% CI excludes zero.
+        return self.ci_lo_pts > 0.0 or self.ci_hi_pts < 0.0
+
+    @property
+    def magnitude_ok(self) -> bool:
+        return abs(self.diff_pts) >= self.magnitude_pts
+
+    @property
+    def passed(self) -> bool:
+        return self.significant and self.magnitude_ok
+
+
+def paired_bootstrap_gate(
+    a_correct: list[bool],
+    b_correct: list[bool],
+    *,
+    n_resamples: int = 10000,
+    magnitude_pts: float = 3.0,
+    seed: int = 0,
+) -> PairedGateResult:
+    """A4's paired-within-harness floor. `a_correct`/`b_correct` are
+    per-question correctness for the SAME ordered set of questions (index i
+    in both lists must be the same question) - the pairing is what lets the
+    bootstrap cancel per-question difficulty instead of averaging it away."""
+    n = len(a_correct)
+    if n == 0 or len(b_correct) != n:
+        raise ValueError("paired_bootstrap_gate requires two equal-length, aligned lists")
+    diffs = [(1 if a else 0) - (1 if b else 0) for a, b in zip(a_correct, b_correct)]
+    observed_pts = 100.0 * sum(diffs) / n
+    rng = random.Random(seed)
+    resample_means: list[float] = []
+    for _ in range(n_resamples):
+        total = 0
+        for _ in range(n):
+            total += diffs[rng.randrange(n)]
+        resample_means.append(100.0 * total / n)
+    resample_means.sort()
+    lo_idx = int(0.025 * n_resamples)
+    hi_idx = min(n_resamples - 1, int(0.975 * n_resamples))
+    return PairedGateResult(
+        n=n,
+        diff_pts=observed_pts,
+        ci_lo_pts=resample_means[lo_idx],
+        ci_hi_pts=resample_means[hi_idx],
+        n_resamples=n_resamples,
+        magnitude_pts=magnitude_pts,
+    )
+
+
+def cross_lab_gate(our_pts: float, other_pts: float, floor_pts: float = _CROSS_LAB_FLOOR_PTS) -> bool:
+    """A4's blunt cross-lab floor: unpaired numbers from different harnesses
+    need a bigger gap before we call it a difference at all."""
+    return abs(our_pts - other_pts) >= floor_pts
+
+
+# --- Pre-registered anchor band (Sprint 2.2; RESEARCH_BASIS §5.1) ----------
+#
+# The anti-tuning commitment only works if the band is on the record BEFORE
+# the run that gets compared against it - written here, checked in, and
+# read by the scoring code, not typed into a results writeup after the
+# number is already known.
+
+ANCHOR_BANDS: dict[str, dict[str, float]] = {
+    "locomo_full_context": {"center": 72.90, "tolerance": 4.0},
+}
+
+
+def anchor_band(name: str) -> dict[str, float]:
+    if name not in ANCHOR_BANDS:
+        raise KeyError(f"no pre-registered anchor band named {name!r}")
+    return ANCHOR_BANDS[name]
+
+
+def anchor_band_ok(name: str, observed_pts: float) -> bool:
+    band = anchor_band(name)
+    return abs(observed_pts - band["center"]) <= band["tolerance"]

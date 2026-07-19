@@ -212,6 +212,68 @@ def test_estimate_firewall_on_partial_and_offprotocol_runs():
     assert protocol.classify_score({"protocol": "estimate"}, proto["judge_model"], "original") == "estimate"
 
 
+# --- statistical gate (A4: paired 3-pt within-harness / 10-pt cross-lab) ---
+
+def test_paired_bootstrap_gate_detects_real_paired_win():
+    # System A correct on 60/100, system B correct on the SAME 100 questions
+    # but only 40/100, with A strictly a superset of B's correct answers ->
+    # a real, large, perfectly-paired effect.
+    a = [True] * 60 + [False] * 40
+    b = [True] * 40 + [False] * 60
+    result = protocol.paired_bootstrap_gate(a, b, n_resamples=2000, seed=1)
+    assert result.diff_pts == 20.0
+    assert result.significant
+    assert result.magnitude_ok
+    assert result.passed
+
+
+def test_paired_bootstrap_gate_rejects_noise():
+    # Identical systems (paired, no difference) -> CI must straddle zero.
+    a = [True, False] * 50
+    b = [True, False] * 50
+    result = protocol.paired_bootstrap_gate(a, b, n_resamples=2000, seed=2)
+    assert result.diff_pts == 0.0
+    assert not result.significant
+    assert not result.passed
+
+
+def test_paired_bootstrap_gate_rejects_small_magnitude_even_if_significant():
+    # A tiny but very consistent 1-pt edge across many paired items can be
+    # bootstrap-significant; the magnitude leg must still veto it (A4).
+    n = 2000
+    a = [True] * 1010 + [False] * 990
+    b = [True] * 1000 + [False] * 1000
+    result = protocol.paired_bootstrap_gate(a, b, n_resamples=1000, seed=3)
+    assert abs(result.diff_pts - 0.5) < 1e-9
+    assert not result.magnitude_ok
+    assert not result.passed
+
+
+def test_paired_bootstrap_gate_requires_aligned_lengths():
+    try:
+        protocol.paired_bootstrap_gate([True], [True, False])
+        assert False, "expected ValueError on mismatched lengths"
+    except ValueError:
+        pass
+
+
+def test_cross_lab_gate_uses_10pt_floor():
+    assert not protocol.cross_lab_gate(72.0, 65.0)  # 7pt gap: not enough
+    assert protocol.cross_lab_gate(80.0, 65.0)  # 15pt gap: clears the floor
+
+
+# --- pre-registered anchor band (Sprint 2.2) --------------------------------
+
+def test_anchor_band_is_pre_registered():
+    band = protocol.anchor_band("locomo_full_context")
+    assert band == {"center": 72.90, "tolerance": 4.0}
+    assert protocol.anchor_band_ok("locomo_full_context", 72.90)
+    assert protocol.anchor_band_ok("locomo_full_context", 68.90)  # lower edge
+    assert protocol.anchor_band_ok("locomo_full_context", 76.90)  # upper edge
+    assert not protocol.anchor_band_ok("locomo_full_context", 68.0)
+    assert not protocol.anchor_band_ok("locomo_full_context", 77.0)
+
+
 def test_verdict_cache_roundtrip(tmp_path):
     cache = protocol.VerdictCache(tmp_path / "verdicts.jsonl")
     k = protocol.VerdictCache.key("gpt-4o", "sha", "q?", "gold", "resp")
