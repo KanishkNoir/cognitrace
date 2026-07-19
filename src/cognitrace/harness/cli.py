@@ -319,6 +319,40 @@ def _cmd_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from cognitrace.store.doctor import run_doctor
+    from cognitrace.store.rebuild import record_replay_baseline
+    from cognitrace.store.schema import open_store
+
+    conn = open_store(Path(args.store_path))
+    if args.record_baseline:
+        sha = record_replay_baseline(conn)
+        print(f"[ok] replay baseline recorded: {sha}")
+    violations = run_doctor(conn)
+    if not violations:
+        print(f"[ok] {args.store_path}: all invariants clean")
+        return 0
+    for v in violations:
+        print(f"[{v.code}] {v.detail}")
+    print(f"[fail] {len(violations)} invariant violation(s)")
+    return 1
+
+
+def _cmd_failures(args: argparse.Namespace) -> int:
+    from cognitrace.store.ingest import list_dead_letters
+    from cognitrace.store.schema import open_store
+
+    conn = open_store(Path(args.store_path))
+    dead = list_dead_letters(conn)
+    if not dead:
+        print(f"[ok] {args.store_path}: no dead letters")
+        return 0
+    for row in dead:
+        print(f"[job {row['job_id']}] turn={row['turn_id']} error={row['error']}")
+    print(f"[warn] {len(dead)} dead-lettered turn(s) — capture miss, visible in FDR")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cognitrace")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -343,8 +377,19 @@ def main(argv: list[str] | None = None) -> int:
     score.add_argument("--ignore-sentinel", action="store_true",
                        help="score despite sentinel drift (forces estimate label)")
 
+    doctor = sub.add_parser("doctor", help="run store invariants I1-I7 against a conversation store file")
+    doctor.add_argument("store_path")
+    doctor.add_argument("--record-baseline", action="store_true",
+                        help="record a fresh replay baseline before checking I7 (first run only)")
+
+    failures = sub.add_parser("failures", help="list dead-lettered extraction jobs in a store file")
+    failures.add_argument("store_path")
+
     args = parser.parse_args(argv)
-    return {"download": _cmd_download, "run": _cmd_run, "score": _cmd_score}[args.command](args)
+    return {
+        "download": _cmd_download, "run": _cmd_run, "score": _cmd_score,
+        "doctor": _cmd_doctor, "failures": _cmd_failures,
+    }[args.command](args)
 
 
 if __name__ == "__main__":

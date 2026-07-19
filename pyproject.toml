@@ -29,7 +29,7 @@ cognitrace = "cognitrace.harness.cli:main"
 packages = ["src/cognitrace"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "hypothesis>=6.100"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
