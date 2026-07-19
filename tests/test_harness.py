@@ -1,7 +1,9 @@
 """Loader + baseline smoke tests on miniature in-format fixtures (no network)."""
 
 import json
+import os
 
+from cognitrace import envfile
 from cognitrace.baselines import full_context, naive_rag
 from cognitrace.harness import protocol
 from cognitrace.harness.datasets import is_sync_watched, load_locomo, load_longmemeval
@@ -272,6 +274,23 @@ def test_anchor_band_is_pre_registered():
     assert protocol.anchor_band_ok("locomo_full_context", 76.90)  # upper edge
     assert not protocol.anchor_band_ok("locomo_full_context", 68.0)
     assert not protocol.anchor_band_ok("locomo_full_context", 77.0)
+
+
+# --- .env loader: real env vars win, .env only fills gaps ------------------
+
+def test_load_dotenv_parses_and_never_overrides_real_env(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        'FOO=bar\n# a comment\n\nBAZ="quoted value"\nEXISTING=from_dotenv\n', encoding="utf-8"
+    )
+    monkeypatch.delenv("FOO", raising=False)
+    monkeypatch.delenv("BAZ", raising=False)
+    monkeypatch.setenv("EXISTING", "already_set_by_shell")
+    envfile._loaded = False
+    envfile.load_dotenv(env_file)
+    assert os.environ["FOO"] == "bar"
+    assert os.environ["BAZ"] == "quoted value"
+    assert os.environ["EXISTING"] == "already_set_by_shell"  # .env never wins
 
 
 # --- Together AI cross-family dispatch --------------------------------------
