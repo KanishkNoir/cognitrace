@@ -8,8 +8,21 @@ honesty-about-non-promises norm).
 ## Promises
 
 - **Replay determinism.** `rebuild_from_raw` reproduces `memory_records` and
-  `supersessions` byte-for-byte from `raw_evidence` + `memory_events` alone.
-  Verified in CI by `doctor`'s I7 check against a recorded baseline hash.
+  `supersessions` byte-for-byte from `memory_events` alone (never by
+  re-running the extractor over `raw_evidence` — S6 forbids recomputing
+  recorded encoder outputs on replay). It is an explicit, deliberate,
+  MUTATING call — the CLI `rebuild --from-raw` command, or a one-time
+  `record_replay_baseline`. `doctor`'s I7 check is READ-ONLY: it hashes
+  whatever is *already* materialized and compares to the recorded
+  baseline; it never re-derives. A health check must never itself be a
+  write.
+- **Baseline semantics.** The replay baseline is a frozen snapshot taken
+  once, not a live recomputation. Any ingest after recording it legitimately
+  changes the materialized state, so I7 will (correctly) flag a mismatch —
+  re-run `record_replay_baseline` after any ingest batch that should become
+  the new reference point. I7's job is catching *unexplained* drift
+  (corruption, a botched migration, a bypassed invariant) between baseline
+  recordings, not detecting that new data was ingested.
 - **Atomicity.** Every `ingest_turn` call is one transaction: either
   `raw_evidence` + `extraction_jobs` + `memory_events` + derived tables all
   land, or none of them do. A caught extraction failure still commits

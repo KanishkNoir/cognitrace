@@ -6,12 +6,17 @@ I3 event provenance   -- every memory_event.raw_evidence_id resolves.
 I4 record provenance  -- every memory_records.source_event_id resolves.
 I5 tri-temporal order -- event_time_lo<=hi and valid_from<=valid_to where set.
 I6 parity gate        -- no extraction_job used an unverified extractor_version.
-I7 replay closure     -- rebuild --from-raw reproduces the recorded baseline hash.
+I7 replay closure     -- the currently materialized state still hashes to the recorded baseline.
 
 Each check is defense-in-depth: I1/I2 are also enforced by UNIQUE
 constraints/partial indexes at write time, so a violation here means the
 schema's own guarantees were bypassed (e.g. a raw executescript, or
 PRAGMA foreign_keys off) -- that is itself the finding.
+
+`doctor` is READ-ONLY. I7 compares a hash of what is already materialized
+against the recorded baseline -- it never re-derives (that would make a
+health check silently rewrite the store). The actual re-derive-from-events
+proof is `rebuild_from_raw`/`record_replay_baseline`, called explicitly.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from cognitrace.store.rebuild import rebuild_from_raw, replay_baseline
+from cognitrace.store.rebuild import current_canonical_sha, replay_baseline
 
 
 @dataclass
@@ -90,9 +95,9 @@ def _i7_replay_closure(conn: sqlite3.Connection) -> list[Violation]:
     baseline = replay_baseline(conn)
     if baseline is None:
         return [Violation("I7", "no replay baseline recorded yet (call record_replay_baseline once)")]
-    current = rebuild_from_raw(conn)
+    current = current_canonical_sha(conn)  # read-only: no re-derive inside doctor
     if current != baseline:
-        return [Violation("I7", f"replay diverged: baseline={baseline} current={current}")]
+        return [Violation("I7", f"materialized state diverged from baseline: baseline={baseline} current={current}")]
     return []
 
 

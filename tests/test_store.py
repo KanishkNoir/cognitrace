@@ -252,7 +252,8 @@ def test_disk_full_refuses_cleanly_without_corruption(tmp_path):
             hit_full = True
             break
     assert hit_full
-    conn.execute("PRAGMA max_page_count = 1000000")  # lift the cap to let doctor run its own queries
+    # doctor is read-only (no re-derive), so it runs fine even with the tiny
+    # page cap still in effect -- a health check must never need write headroom.
     non_i7 = [v for v in run_doctor(conn) if v.code != "I7"]
     assert non_i7 == []  # refused past the cap, but nothing corrupted
 
