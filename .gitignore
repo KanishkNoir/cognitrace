@@ -40,3 +40,9 @@ Thumbs.db
 .codex/
 .agents/
 .mcp.json
+
+# Internal planning/process docs (kept locally, not part of the public repo)
+AGENTS.md
+CLAUDE.md
+SPRINT.md
+research/
