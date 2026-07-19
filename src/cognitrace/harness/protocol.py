@@ -62,9 +62,12 @@ def load_protocol() -> dict | None:
 
 def build_manifest(*, dataset: str, dataset_path: str, dataset_sha256: str,
                    system: str, system_params: dict, reader_model: str,
-                   prompts: dict[str, str], seed: int, limit: int) -> dict:
+                   prompts: dict[str, str], seed: int, limit: int,
+                   results_path: str | None = None) -> dict:
     """The run-time half of the FDR. Judge fields are added at score time
     (run and score are separate so regrade never re-spends reader calls)."""
+    from .datasets import is_sync_watched  # local import: avoids a module cycle
+
     manifest = {
         "fdr": 1,
         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -72,6 +75,7 @@ def build_manifest(*, dataset: str, dataset_path: str, dataset_sha256: str,
         "dataset": dataset,
         "dataset_path": dataset_path,
         "dataset_sha256": dataset_sha256,
+        "dataset_path_sync_watched": is_sync_watched(dataset_path) if dataset_path else None,
         "system": system,
         "system_params": system_params,
         "reader_model": reader_model,
@@ -79,6 +83,8 @@ def build_manifest(*, dataset: str, dataset_path: str, dataset_sha256: str,
         "seed": seed,
         "limit": limit,
     }
+    if results_path is not None:
+        manifest["results_path_sync_watched"] = is_sync_watched(results_path)
     manifest["protocol"] = classify_run(manifest)
     return manifest
 

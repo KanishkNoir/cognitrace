@@ -1,21 +1,36 @@
 """Loaders that normalize LongMemEval and LoCoMo into Task objects.
 
-Raw files live under data/ (gitignored):
-  data/longmemeval/longmemeval_s.json   (and _m / _oracle)
-  data/locomo/locomo10.json
+Raw files live under DATA_DIR:
+  <DATA_DIR>/longmemeval/longmemeval_s.json   (and _m / _oracle)
+  <DATA_DIR>/locomo/locomo10.json
 See `cognitrace download` for how to fetch them.
+
+DATA_DIR defaults to a per-user path OUTSIDE the repo (S20): SQLite WAL
+files and large downloads under a sync-watched tree (OneDrive, Dropbox)
+are a corruption/variance hazard, and this repo itself lives under
+OneDrive on the reference machine. Override with COGNITRACE_DATA_DIR if a
+different location is wanted (e.g. a CI runner's own scratch dir).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
 from .schema import QAItem, Session, Task, Turn
 
-DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+DATA_DIR = Path(os.environ.get("COGNITRACE_DATA_DIR") or (Path.home() / "cognitrace-data" / "data"))
+
+
+def is_sync_watched(path: str | Path) -> bool:
+    """Best-effort detector for the OneDrive/Dropbox/iCloud hazard S20 names
+    -- used to make the FDR manifest record the filesystem, not just assert
+    it's safe."""
+    lowered = str(Path(path).resolve()).lower()
+    return any(marker in lowered for marker in ("onedrive", "dropbox", "icloud"))
 
 _LOCOMO_SESSION_KEY = re.compile(r"^session_(\d+)$")
 _LOCOMO_DIA_ID = re.compile(r"^D(\d+):\d+$")

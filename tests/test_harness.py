@@ -4,8 +4,8 @@ import json
 
 from cognitrace.baselines import full_context, naive_rag
 from cognitrace.harness import protocol
-from cognitrace.harness.datasets import load_locomo, load_longmemeval
-from cognitrace.harness.reader import deterministic_match, prompt_fingerprints
+from cognitrace.harness.datasets import is_sync_watched, load_locomo, load_longmemeval
+from cognitrace.harness.reader import deterministic_match, is_together_model, prompt_fingerprints
 
 LONGMEMEVAL_FIXTURE = [
     {
@@ -272,6 +272,34 @@ def test_anchor_band_is_pre_registered():
     assert protocol.anchor_band_ok("locomo_full_context", 76.90)  # upper edge
     assert not protocol.anchor_band_ok("locomo_full_context", 68.0)
     assert not protocol.anchor_band_ok("locomo_full_context", 77.0)
+
+
+# --- Together AI cross-family dispatch --------------------------------------
+
+def test_is_together_model_detects_org_slash_name():
+    assert is_together_model("meta-llama/Llama-3.3-70B-Instruct-Turbo")
+    assert is_together_model("Qwen/Qwen2.5-72B-Instruct-Turbo")
+    assert not is_together_model("gpt-4o-mini")
+    assert not is_together_model("claude-3-5-sonnet-latest")
+
+
+# --- S20: OneDrive/sync-watched filesystem hazard -------------------------
+
+def test_is_sync_watched_detects_onedrive():
+    assert is_sync_watched(r"C:\Users\Admin\OneDrive\Desktop\CogniTrace\data")
+    assert is_sync_watched(r"C:\Users\Admin\Dropbox\data")
+    assert not is_sync_watched(r"C:\Users\Admin\cognitrace-data\data")
+
+
+def test_build_manifest_records_sync_hazard():
+    manifest = protocol.build_manifest(
+        dataset="locomo", dataset_path=r"C:\Users\Admin\OneDrive\Desktop\CogniTrace\data\locomo10.json",
+        dataset_sha256="x", system="full-context", system_params={}, reader_model="gpt-4o-mini",
+        prompts=prompt_fingerprints(), seed=0, limit=0,
+        results_path=r"C:\Users\Admin\cognitrace-data\results\out.jsonl",
+    )
+    assert manifest["dataset_path_sync_watched"] is True
+    assert manifest["results_path_sync_watched"] is False
 
 
 def test_verdict_cache_roundtrip(tmp_path):

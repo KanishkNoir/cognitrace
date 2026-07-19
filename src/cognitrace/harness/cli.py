@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
@@ -22,7 +23,7 @@ from . import protocol
 from .datasets import DATA_DIR, file_sha256, load_locomo, load_longmemeval
 from .schema import Task
 
-RESULTS_DIR = DATA_DIR.parent / "results"
+RESULTS_DIR = Path(os.environ.get("COGNITRACE_RESULTS_DIR") or (DATA_DIR.parent / "results"))
 
 _LOCOMO_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
 
@@ -108,6 +109,7 @@ def _run_once(args: argparse.Namespace, seed: int) -> Path:
         prompts=reader.prompt_fingerprints(),
         seed=seed,
         limit=args.limit,
+        results_path=str(out),
     )
 
     n_done = n_err = 0

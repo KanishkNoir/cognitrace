@@ -10,9 +10,14 @@ LLM judge. Tier-0 rules must stay generic, dataset-agnostic transformations;
 a rule that would not make sense on a dataset we have never seen does not
 belong here (the equivalence-rule firewall).
 
-Judge calls dispatch by model prefix so the judge can live in a different
-model family than the reader ("claude-*" -> Anthropic, otherwise OpenAI) —
-the cross-family rule.
+Judge calls dispatch by model name so the judge can live in a different
+model family than the reader ("claude-*" -> Anthropic; a name containing
+"/" -> Together AI's OpenAI-compatible endpoint, e.g.
+"meta-llama/Llama-3.3-70B-Instruct-Turbo"; otherwise OpenAI) — the
+cross-family rule. Together is a useful cross-family judge candidate
+specifically because it hosts open-weight models from families entirely
+distinct from both the OpenAI reader and an OpenAI judge (the self-
+preference-bias case pinned-v1 is known to risk, per S14/pinned-v2).
 """
 
 from __future__ import annotations
@@ -92,11 +97,31 @@ class JudgeResult:
     raw: str  # verdict text as returned (tier-0: the rule name)
 
 
+TOGETHER_BASE_URL = "https://api.together.xyz/v1"
+
+
 def _openai_client() -> OpenAI:
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         raise SystemExit("OPENAI_API_KEY is not set (harness needs it for reader/judge).")
     return OpenAI(api_key=key)
+
+
+def _together_client() -> OpenAI:
+    key = os.environ.get("TOGETHER_API_KEY")
+    if not key:
+        raise SystemExit("TOGETHER_API_KEY is not set (needed for a Together-hosted model).")
+    return OpenAI(api_key=key, base_url=TOGETHER_BASE_URL)
+
+
+def is_together_model(model: str) -> bool:
+    """Together model ids are conventionally 'org/Model-Name'; neither
+    OpenAI ('gpt-*') nor Anthropic ('claude-*') ids contain '/'."""
+    return "/" in model
+
+
+def _client_for_model(model: str) -> OpenAI:
+    return _together_client() if is_together_model(model) else _openai_client()
 
 
 def read_answer(question: str, context: str, model: str = DEFAULT_READER_MODEL,
@@ -109,14 +134,19 @@ def read_answer(question: str, context: str, model: str = DEFAULT_READER_MODEL,
         user += f"Current date: {question_date}\n"
     user += f"Question: {question}"
     last_err: str | None = None
+    # Together's OpenAI-compatible endpoint does not guarantee `seed`
+    # reproducibility across its open-weight backends the way OpenAI's own
+    # API does; omit it there rather than send a parameter whose effect is
+    # unverified (a determinism claim we can't back up is worse than none).
+    kwargs = {} if is_together_model(model) else {"seed": seed}
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            resp = _openai_client().chat.completions.create(
+            resp = _client_for_model(model).chat.completions.create(
                 model=model,
                 messages=[{"role": "system", "content": _READER_SYSTEM},
                           {"role": "user", "content": user}],
                 temperature=0,
-                seed=seed,
+                **kwargs,
             )
             usage = getattr(resp, "usage", None)
             return ReadResult(
@@ -186,7 +216,7 @@ def _judge_completion(prompt: str, model: str) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
         return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-    resp = _openai_client().chat.completions.create(
+    resp = _client_for_model(model).chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
