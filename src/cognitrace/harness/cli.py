@@ -340,6 +340,42 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_validate_judges(args: argparse.Namespace) -> int:
+    from cognitrace.harness import adversarial
+
+    tasks = _load_tasks("locomo")
+    cases = adversarial.generate_validation_set(tasks, seed=args.seed)
+    judges = [j.strip() for j in args.judges.split(",") if j.strip()]
+    print(f"[validate-judges] {len(cases)} cases x {len(judges)} judge(s) "
+          f"= {len(cases) * len(judges)} judge calls")
+
+    results = adversarial.run_validation(cases, judges)
+    tables = adversarial.confusion_tables(results)
+    verdicts = adversarial.gate_check(tables)
+
+    out = RESULTS_DIR / f"judge_validation.seed{args.seed}.{int(time.time())}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "seed": args.seed, "n_cases": len(cases), "judges": judges,
+        "confusion_tables": tables, "gate_verdicts": verdicts, "raw_results": results,
+    }, indent=1), encoding="utf-8")
+
+    for jm in judges:
+        print(f"\n=== {jm} ===")
+        for cls in adversarial.CLASSES:
+            row = tables[jm][cls]
+            fa = f"{row['false_accept_rate']:.1%}" if row["false_accept_rate"] is not None else "n/a"
+            fr = f"{row['false_reject_rate']:.1%}" if row["false_reject_rate"] is not None else "n/a"
+            print(f"  {cls:<24} n={row['n']:<3} false-accept={fa:<7} false-reject={fr}")
+        v = verdicts[jm]
+        gate = "PASS" if v["passes"] else "FAIL"
+        fa_s = f"{v['false_accept_max']:.1%}" if v["false_accept_max"] is not None else "n/a"
+        fr_s = f"{v['false_reject_max']:.1%}" if v["false_reject_max"] is not None else "n/a"
+        print(f"  gate: false-accept-max={fa_s} false-reject-max={fr_s} -> {gate}")
+    print(f"\n[ok] full results -> {out}")
+    return 0
+
+
 def _cmd_failures(args: argparse.Namespace) -> int:
     from cognitrace.store.ingest import list_dead_letters
     from cognitrace.store.schema import open_store
@@ -387,10 +423,18 @@ def main(argv: list[str] | None = None) -> int:
     failures = sub.add_parser("failures", help="list dead-lettered extraction jobs in a store file")
     failures.add_argument("store_path")
 
+    validate_judges = sub.add_parser(
+        "validate-judges", help="adversarial judge validation over real LoCoMo gold (Sprint 1.5, S14)"
+    )
+    validate_judges.add_argument("--judges", default="gpt-4o",
+                                 help="comma-separated candidate judge models")
+    validate_judges.add_argument("--seed", type=int, default=0)
+
     args = parser.parse_args(argv)
     return {
         "download": _cmd_download, "run": _cmd_run, "score": _cmd_score,
         "doctor": _cmd_doctor, "failures": _cmd_failures,
+        "validate-judges": _cmd_validate_judges,
     }[args.command](args)
 
 
