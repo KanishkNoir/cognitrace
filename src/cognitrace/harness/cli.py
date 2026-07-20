@@ -34,6 +34,26 @@ _MAX_IDS_PER_ROW = 100  # cap stored retrieved-id lists; full-context would bloa
 
 
 def _cmd_download(args: argparse.Namespace) -> int:
+    if getattr(args, "model", None):
+        from cognitrace.answer.models import get_spec, model_dir
+        try:
+            spec = get_spec(args.model)
+        except KeyError as exc:
+            raise SystemExit(str(exc))
+        d = model_dir(args.model)
+        if (d / spec.onnx_filename).exists() and (d / "tokenizer.json").exists():
+            print(f"[skip] QA model {args.model} present at {d}")
+            return 0
+        from cognitrace.answer.export import export_to_onnx
+        try:
+            sha = export_to_onnx(args.model)
+            print(f"[ok  ] exported {args.model} -> {d}  (onnx sha {sha[:12]})")
+        except ImportError:
+            print(f"[todo] QA model {args.model} needs a one-time ONNX export.")
+            print(f"       pip install optimum torch transformers, then rerun:")
+            print(f"       cognitrace download --model {args.model}")
+        return 0
+
     locomo_target = DATA_DIR / "locomo" / "locomo10.json"
     if locomo_target.exists():
         print(f"[skip] {locomo_target} already present")
@@ -395,7 +415,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cognitrace")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("download", help="fetch benchmark datasets into data/")
+    dl = sub.add_parser("download", help="fetch benchmark datasets / a QA model into data/")
+    dl.add_argument("--model", default=None,
+                    help="also fetch/export a registered QA model (e.g. minilm-squad2)")
 
     run = sub.add_parser("run", help="run a system over a dataset")
     run.add_argument("dataset", choices=["locomo", "longmemeval_s", "longmemeval_m", "longmemeval_oracle"])

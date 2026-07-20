@@ -159,6 +159,10 @@ embedding = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
+extractive-qa = [
+    { name = "onnxruntime" },
+    { name = "tokenizers" },
+]
 judge-anthropic = [
     { name = "anthropic" },
 ]
@@ -175,9 +179,11 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'embedding'", specifier = ">=0.3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "numpy", marker = "extra == 'embedding'", specifier = ">=1.24" },
+    { name = "onnxruntime", marker = "extra == 'extractive-qa'", specifier = ">=1.17" },
     { name = "openai", specifier = ">=1.40" },
+    { name = "tokenizers", marker = "extra == 'extractive-qa'", specifier = ">=0.15" },
 ]
-provides-extras = ["embedding", "judge-anthropic"]
+provides-extras = ["embedding", "judge-anthropic", "extractive-qa"]
 
 [package.metadata.requires-dev]
 dev = [

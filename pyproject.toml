@@ -21,6 +21,9 @@ dependencies = [
 embedding = ["fastembed>=0.3", "numpy>=1.24"]
 # Cross-family judging (claude-* judge models) — the hardened protocol lane.
 judge-anthropic = ["anthropic>=0.34"]
+# Zero-LLM extractive answerer (Sprint 4.6). onnxruntime pulls numpy in
+# transitively; the export toolchain (optimum/torch) is dev-only, not here.
+extractive-qa = ["onnxruntime>=1.17", "tokenizers>=0.15"]
 
 [project.scripts]
 cognitrace = "cognitrace.harness.cli:main"

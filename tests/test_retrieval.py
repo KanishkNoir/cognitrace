@@ -499,3 +499,16 @@ def test_retrieve_uses_the_soft_path_when_no_query_anchor_resolves(tmp_path):
     result = retrieve(conn, _qa("q1", "what is Maya's dog named", ["t1"]))
     assert result.temporal_route == "soft"
     assert "Rex the beagle" in result.context
+
+
+def test_retrieve_exposes_admitted_evidence_as_turnid_rawvalue_pairs(tmp_path):
+    # The answerer (Sprint 4.6) needs each admitted record's RAW value (for
+    # span extraction) and its turn_id (for answer->evidence provenance) --
+    # not the reader-facing formatted context string.
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_one("FACT", "maya:pet_name", "pet_name", "Rex the beagle"))
+    result = retrieve(conn, _qa("q1", "what is Maya's dog named", ["t1"]))
+    assert result.admitted_evidence == [("t1", "Rex the beagle")]

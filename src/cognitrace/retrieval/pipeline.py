@@ -48,6 +48,7 @@ class RetrievalResult:
     decisions: list[AdmissionDecision]
     index_meta: dict
     temporal_route: str
+    admitted_evidence: list[tuple[str, str]]
 
 
 def index_meta(conn: sqlite3.Connection) -> dict:
@@ -217,6 +218,10 @@ def retrieve(
 
     context, cache_boundary = _assemble_context(budget_result.admitted, hits_by_id)
     admitted_turn_ids = [hits_by_id[s.record_id].turn_id for s in budget_result.admitted]
+    admitted_evidence = [
+        (hits_by_id[s.record_id].turn_id, hits_by_id[s.record_id].value)
+        for s in budget_result.admitted
+    ]
     session_ids = list(dict.fromkeys(hits_by_id[s.record_id].session_id for s in budget_result.admitted))
 
     gold = question.evidence_turn_ids
@@ -258,4 +263,5 @@ def retrieve(
         admitted_turn_ids=admitted_turn_ids, recall_at_retrieved=recall_at_retrieved,
         recall_at_budget=recall_at_budget, decisions=budget_result.decisions, index_meta=meta,
         temporal_route=temporal_route,
+        admitted_evidence=admitted_evidence,
     )
