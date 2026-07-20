@@ -31,6 +31,13 @@ def _extract_one(kind, subject_key, attribute, value):
     return _fn
 
 
+def _extract_dated(kind, subject_key, attribute, value, event_time_lo, event_time_hi):
+    def _fn(content):
+        return [ExtractedEvent(type=kind, subject_key=subject_key, attribute=attribute, value=value,
+                                event_time_lo=event_time_lo, event_time_hi=event_time_hi)]
+    return _fn
+
+
 # --- Stage 1: pools ----------------------------------------------------
 
 from cognitrace.retrieval.pools import pool_lex, pool_prot, pool_valid
@@ -106,6 +113,52 @@ def test_pool_valid_returns_only_live_records_most_recent_first(tmp_path):
 def test_pool_prot_is_stubbed_empty(tmp_path):
     conn = _fresh_store(tmp_path)
     assert pool_prot(conn, limit=10) == []
+
+
+# --- Stage 1.5: temporal-window pool (Sprint 4.5, A2 hard-gate tier) -------
+
+from cognitrace.retrieval.pools import pool_temporal_window
+
+
+def test_pool_temporal_window_matches_records_overlapping_the_window(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:trip", "trip", "Paris trip",
+                                           "2023-03-01", "2023-03-31"))
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t2", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:trip2", "trip", "Paris trip again",
+                                           "2023-07-01", "2023-07-31"))
+    hits = pool_temporal_window(conn, "Paris trip", "2023-03-01", "2023-03-31", limit=10)
+    assert [h.value for h in hits] == ["Paris trip"]
+
+
+def test_pool_temporal_window_matches_on_partial_overlap_not_containment(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:festival", "trip", "Spring festival",
+                                           "2023-03-15", "2023-04-15"))
+    hits = pool_temporal_window(conn, "festival", "2023-03-01", "2023-03-31", limit=10)
+    assert [h.value for h in hits] == ["Spring festival"]
+
+
+def test_pool_temporal_window_excludes_records_without_event_time(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_one("FACT", "maya:pet_name", "pet_name", "Rex the beagle"))
+    hits = pool_temporal_window(conn, "Rex beagle", "2023-01-01", "2023-12-31", limit=10)
+    assert hits == []
+
+
+def test_pool_temporal_window_returns_empty_for_empty_query_text(tmp_path):
+    conn = _fresh_store(tmp_path)
+    assert pool_temporal_window(conn, "", "2023-01-01", "2023-12-31", limit=10) == []
 
 
 # --- Stage 2: RRF fusion -------------------------------------------------
@@ -302,9 +355,9 @@ from cognitrace.harness.schema import QAItem
 from cognitrace.retrieval.pipeline import index_meta, retrieve
 
 
-def _qa(qid, question, evidence_turn_ids):
+def _qa(qid, question, evidence_turn_ids, question_date=None):
     return QAItem(qid=qid, question=question, answer="", category="single_hop",
-                  question_date=None, evidence_session_ids=[], evidence_turn_ids=evidence_turn_ids,
+                  question_date=question_date, evidence_session_ids=[], evidence_turn_ids=evidence_turn_ids,
                   is_abstention=False)
 
 
@@ -371,3 +424,78 @@ def test_index_meta_reflects_record_count(tmp_path):
                 content="x", mention_time=None,
                 extract_fn=_extract_one("FACT", "maya:pet_name", "pet_name", "Rex"))
     assert index_meta(conn)["record_count"] == 1
+
+
+# --- Sprint 4.5: two-tier temporal routing (A2) ----------------------------
+# EVENT_DATED facts never close (supersedable=0, S3), so both records below
+# would show up via pool_valid's "every live record" rescue regardless of
+# lexical match -- these tests prove the hard gate actually EXCLUDES the
+# out-of-window one, not just that the in-window one is findable.
+
+def test_retrieve_hard_gates_to_the_resolved_window_and_excludes_outside_it(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:trip", "trip", "Paris trip",
+                                           "2023-03-01", "2023-03-31"))
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t2", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:trip2", "trip", "Paris trip returned",
+                                           "2023-07-01", "2023-07-31"))
+    result = retrieve(conn, _qa("q1", "Where did Maya go on her Paris trip in March 2023?", ["t1"]))
+    assert result.temporal_route == "hard_gate"
+    assert "Paris trip" in result.context
+    assert "Paris trip returned" not in result.context
+    assert result.recall_at_budget == 1.0
+
+
+def test_retrieve_falls_back_to_the_fused_path_when_the_window_is_empty(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    # A live fact the fused (soft) path would find -- but nothing in March.
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_one("FACT", "maya:pet_name", "pet_name", "Rex"))
+    result = retrieve(conn, _qa("q1", "What happened in March 2023?", []))
+    assert result.temporal_route == "empty_window_fallback"
+    assert "Rex" in result.context  # fell back to the normal fused pipeline
+
+
+def test_hard_gate_can_exclude_an_in_window_record_lacking_lexical_overlap(tmp_path):
+    # Known, stated tradeoff (not a bug): pool_temporal_window requires
+    # BOTH the resolved window AND an FTS5 lexical match -- a defensible
+    # SQL-natural reading of A2's "rank lexically within the window", but
+    # it means the hard-gate tier trades away pool_valid's lexical-match-
+    # free rescue. An in-window gold record whose value shares no token
+    # with the query is excluded from a hard-gated result even though the
+    # soft path (no anchor resolved) finds it via pool_valid regardless.
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="ta", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:trip_a", "trip", "March vacation",
+                                           "2023-03-01", "2023-03-31"))
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="tb", session_id="s1", role="Maya",
+                content="x", mention_time=None,
+                extract_fn=_extract_dated("EVENT_DATED", "maya:trip_b", "trip", "went to Paris",
+                                           "2023-03-15", "2023-03-20"))
+
+    hard = retrieve(conn, _qa("q1", "What happened in March 2023?", ["tb"]))
+    assert hard.temporal_route == "hard_gate"
+    assert hard.recall_at_budget == 0.0  # tb is in-window but shares no token with the query
+
+    soft = retrieve(conn, _qa("q2", "What happened during the trip?", ["tb"]))
+    assert soft.temporal_route == "soft"  # "trip" alone doesn't resolve to a date
+    assert soft.recall_at_budget == 1.0  # pool_valid's rescue finds tb regardless of lexical match
+
+
+def test_retrieve_uses_the_soft_path_when_no_query_anchor_resolves(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="x", mention_time="2023-01-01T00:00:00Z",
+                extract_fn=_extract_one("FACT", "maya:pet_name", "pet_name", "Rex the beagle"))
+    result = retrieve(conn, _qa("q1", "what is Maya's dog named", ["t1"]))
+    assert result.temporal_route == "soft"
+    assert "Rex the beagle" in result.context

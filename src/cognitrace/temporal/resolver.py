@@ -271,6 +271,74 @@ def _parse_anchor_relative(text: str, anchor: date) -> TemporalInterval | None:
 _BEFORE_AFTER = re.compile(r"\b(?:before|after)\b", re.IGNORECASE)
 
 
+def parse_anchor_date(text: str | None) -> date | None:
+    """Lenient, fail-safe conversion of a dataset's raw `question_date`
+    string (format unknown/dataset-dependent -- LongMemEval's own JSON is
+    the only source that populates it; LoCoMo never does) into a `date`
+    for `resolve_query_anchor`'s anchor-relative branch. Tries ISO 8601
+    (`date` or `datetime` prefix) first, then the resolver's own absolute-
+    date formats; returns None rather than guessing on anything else --
+    a bad anchor would silently mis-resolve every anchor-relative query
+    against it, which is worse than treating the question as unanchored.
+    O(1)."""
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        pass
+    return _parse_absolute_date(text)
+
+
+_SIMPLE_ANCHOR_PATTERN = re.compile(r"\b(" + "|".join(_SIMPLE_ANCHOR) + r")\b", re.IGNORECASE)
+
+
+def extract_query_anchor(text: str) -> str | None:
+    """Query-side counterpart to `resolve` (A2): finds a temporal
+    expression EMBEDDED anywhere in free text (a question), rather than
+    requiring the whole string to be the expression, so a full sentence
+    ("What did John attend ... in March 2023?") yields just the span
+    ("March 2023") `resolve()` can consume unchanged. Tries patterns in
+    the same before/after-first priority `resolve()` itself uses (a
+    before/after qualifier must win over a smaller absolute-date pattern
+    matching just the embedded date and silently dropping the qualifier
+    that changes its meaning -- see `resolve`'s own docstring). Does NOT
+    loosen `_ABS_YEAR` (bare 4-digit year) to search mode: that pattern is
+    deliberately fullmatch-only in `resolve()` to guard against a stray
+    number in prose ("I have 2023 dollars saved"), and embedding it here
+    would reintroduce exactly that false-positive risk. Returns None if
+    nothing matches -- callers must treat that as "unresolved", not as
+    "no time reference exists" (same contract as `resolve`). O(P) pattern
+    attempts, P = 8 fixed patterns, each O(len(text))."""
+    for pattern in (
+        _REL_TO_DATE, _ABS_DAY_MONTH_YEAR, _ABS_MONTH_DAY_YEAR, _ABS_MONTH_YEAR,
+        _SIMPLE_ANCHOR_PATTERN, _REL_WORD_UNIT, _N_UNITS_AGO, _IN_N_UNITS,
+    ):
+        m = pattern.search(text)
+        if m:
+            return m.group(0).strip(" ?.!,;:")
+    return None
+
+
+def resolve_query_anchor(text: str, anchor: date | None) -> TemporalInterval | None:
+    """Extract + resolve in one step, for query text where an anchor date
+    may not exist (real LoCoMo questions never carry one -- `question_date`
+    is only ever populated for LongMemEval). When `anchor` is None, only
+    anchor-INDEPENDENT expressions (absolute dates, before/after-relative)
+    are attempted; an anchor-relative phrase ("last week") extracted
+    without a real anchor to resolve it against returns None rather than
+    guessing -- the same conservatism as an unresolved `resolve()` call.
+    O(1) plus the cost of `extract_query_anchor`/`resolve`."""
+    span = extract_query_anchor(text)
+    if span is None:
+        return None
+    if anchor is None:
+        if _BEFORE_AFTER.search(span):
+            return _parse_relative_to_date(span)
+        return _parse_absolute(span)
+    return resolve(span, anchor)
+
+
 def resolve(expression: str, anchor: date) -> TemporalInterval | None:
     """Resolve one temporal expression against an anchor date. Tries, in
     order: a date-relative phrase ("the Sunday before X"); an absolute

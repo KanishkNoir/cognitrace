@@ -7,7 +7,13 @@ post-budget admitted set, so evidence loss between retrieval and what a
 reader actually sees is visible, not just a lower headline number. Note the
 gap this measures includes both the `stage3_top_n` truncation (candidates
 past the top-N by fusion rank never reach scoring/admission at all) and the
-budget admission step itself, not the token budget in isolation.
+budget admission step itself, not the token budget in isolation. On the
+Sprint 4.5 hard-gate path (`_route_pools`'s "hard_gate" route), a third
+contributor joins those two: `retrieved_turn_ids` is drawn only from
+`pool_temporal_window`'s results, so `recall_at_retrieved`'s denominator
+already reflects the window+lexical filter, not the full corpus -- the gap
+`recall_at_budget` measures is narrower on that path, not directly
+comparable to the soft path's stage3/budget-only gap.
 """
 
 from __future__ import annotations
@@ -22,8 +28,9 @@ from cognitrace.harness.protocol import evidence_recall
 from cognitrace.harness.schema import QAItem
 from cognitrace.retrieval.budget import AdmissionDecision, admit_budget
 from cognitrace.retrieval.fusion import reciprocal_rank_fusion
-from cognitrace.retrieval.pools import PoolHit, pool_lex, pool_prot, pool_valid
+from cognitrace.retrieval.pools import PoolHit, pool_lex, pool_prot, pool_temporal_window, pool_valid
 from cognitrace.retrieval.scorer import ScoredHit, score_candidates
+from cognitrace.temporal.resolver import parse_anchor_date, resolve_query_anchor
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+")
 
@@ -40,6 +47,7 @@ class RetrievalResult:
     recall_at_budget: float | None
     decisions: list[AdmissionDecision]
     index_meta: dict
+    temporal_route: str
 
 
 def index_meta(conn: sqlite3.Connection) -> dict:
@@ -126,27 +134,70 @@ def _chain_current_lane(fused_ids: list[int], hits_by_id: dict[int, PoolHit], qu
     ]
 
 
+def _route_pools(
+    conn: sqlite3.Connection, question: QAItem, *, pool_cap: int
+) -> tuple[dict[str, list[PoolHit]], str]:
+    """Two-tier temporal routing (A2, Sprint 4.5). Tier (a): if the
+    question carries a rule-resolvable time anchor (`resolve_query_anchor`
+    -- absolute dates always; anchor-relative phrases like "last week"
+    only when `question.question_date` gives a real anchor to resolve
+    against, per `parse_anchor_date`), the resolved interval becomes a
+    first-phase SQL filter (`pool_temporal_window`) and nothing outside
+    it is even a candidate -- a genuine gate, not a boost. An anchored
+    query whose window matches nothing falls back to the normal fused
+    path rather than returning empty (A2's explicit escape hatch) --
+    logged as `"empty_window_fallback"` so a misroute (the extractor
+    found a phrase, but the store has nothing there) is visible, not
+    silently indistinguishable from "no anchor at all". Tier (b): no
+    hard-resolvable anchor -- the "soft/inferred" case -- routes through
+    the normal fused pools unchanged; A2's "second-phase feature plus a
+    dedicated validity-pool arm in the RRF union" for this tier is
+    `pool_valid`/`ScoredHit.is_live`, already shipped in Sprint 4.4, not
+    new work here. O(1) plus one `pool_temporal_window` query when an
+    anchor resolves.
+
+    Trades away `pool_valid`'s lexical-match-free rescue when it fires
+    (see `pool_temporal_window`'s docstring): 11.5% of real LoCoMo
+    temporal-category questions (37/321) carry an extractable, resolvable
+    anchor -- that is measured APPLICABILITY only, not benefit. Whether
+    hard-gating those 37 improves or hurts evidence-recall versus the
+    soft path is unmeasured until the harness (Sprint 4.7) runs both."""
+    anchor = parse_anchor_date(question.question_date)
+    interval = resolve_query_anchor(question.question, anchor)
+    if interval is not None:
+        lo, hi = interval.to_iso()
+        hard_hits = pool_temporal_window(conn, question.question, lo, hi, limit=pool_cap)
+        if hard_hits:
+            return {"temporal": hard_hits}, "hard_gate"
+        route = "empty_window_fallback"
+    else:
+        route = "soft"
+    return {
+        "lex": pool_lex(conn, question.question, limit=pool_cap),
+        "valid": pool_valid(conn, limit=pool_cap),
+        "prot": pool_prot(conn, limit=pool_cap),
+    }, route
+
+
 def retrieve(
     conn: sqlite3.Connection, question: QAItem, *,
     token_budget: int = 900, pool_cap: int = 24, stage3_top_n: int = 24,
     feature_log: TextIO | None = None,
 ) -> RetrievalResult:
-    """The Sprint 4.4 phased-ranking pipeline (S9): pools -> RRF -> feature
-    scorer -> budget admission -> context assembly. Lexical-only this
-    sprint (`pool_prot` is stubbed; A1 gates the dense arm behind Phase
-    1b). O(R log R) where R is the total row count touched by the
-    lexical/live pool queries -- dominated by `pool_lex`'s FTS5 MATCH in
-    the worst case (a broad OR-of-tokens query can match much of the
-    corpus); `pool_valid`'s full O(R) scan of `memory_records` is the same
-    order and can dominate in practice for narrow queries, at Phase-1
+    """The Sprint 4.4/4.5 phased-ranking pipeline (S9, A2): two-tier
+    temporal routing (`_route_pools`) -> RRF -> feature scorer -> budget
+    admission -> context assembly. Lexical-only this sprint (`pool_prot`
+    is stubbed; A1 gates the dense arm behind Phase 1b). O(R log R) where
+    R is the total row count touched by the routed pool queries --
+    dominated by `pool_lex`'s FTS5 MATCH in the worst case (a broad
+    OR-of-tokens query can match much of the corpus); `pool_valid`'s full
+    O(R) scan of `memory_records` is the same order and can dominate in
+    practice for narrow queries; the hard-gate tier adds one more FTS5
+    query (`pool_temporal_window`), same order again. At Phase-1
     cardinality (hundreds of rows) the distinction doesn't change the
     bound.
     """
-    pools = {
-        "lex": pool_lex(conn, question.question, limit=pool_cap),
-        "valid": pool_valid(conn, limit=pool_cap),
-        "prot": pool_prot(conn, limit=pool_cap),
-    }
+    pools, temporal_route = _route_pools(conn, question, pool_cap=pool_cap)
     hits_by_id: dict[int, PoolHit] = {}
     for hits in pools.values():
         for hit in hits:
@@ -186,6 +237,7 @@ def retrieve(
         feature_log.write(json.dumps({
             "qid": question.qid,
             "index_meta": meta,
+            "temporal_route": temporal_route,
             "recall_at_retrieved": recall_at_retrieved,
             "recall_at_budget": recall_at_budget,
             "decisions": [
@@ -205,4 +257,5 @@ def retrieve(
         turn_ids=admitted_turn_ids, retrieved_turn_ids=retrieved_turn_ids,
         admitted_turn_ids=admitted_turn_ids, recall_at_retrieved=recall_at_retrieved,
         recall_at_budget=recall_at_budget, decisions=budget_result.decisions, index_meta=meta,
+        temporal_route=temporal_route,
     )

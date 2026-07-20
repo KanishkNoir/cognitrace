@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from cognitrace.temporal.resolver import resolve
+from cognitrace.temporal.resolver import (
+    extract_query_anchor,
+    parse_anchor_date,
+    resolve,
+    resolve_query_anchor,
+)
 
 _ANCHOR = date(2023, 5, 10)  # a Wednesday
 
@@ -154,3 +159,98 @@ def test_month_year_with_comma():
     r = resolve("January, 2023", _ANCHOR)
     assert r is not None
     assert _iso(r) == ("2023-01-01", "2023-01-31")
+
+
+# --- query-side anchor extraction (Sprint 4.5, A2) -------------------------
+# Real LoCoMo question phrasing (measured: 37/321 = 11.5% of category-2
+# questions carry an extractable, resolvable absolute-date anchor -- all
+# absolute dates, zero anchor-relative, since LoCoMo never supplies a
+# question_date to anchor "last week"/"yesterday" against).
+
+def test_extract_query_anchor_finds_absolute_month_year():
+    q = "What did John attend with his colleagues in March 2023?"
+    assert extract_query_anchor(q) == "March 2023"
+
+
+def test_extract_query_anchor_finds_absolute_day_month_year():
+    q = "What did Audrey eat for dinner on October 24, 2023?"
+    assert extract_query_anchor(q) == "October 24, 2023"
+
+
+def test_extract_query_anchor_strips_trailing_question_mark():
+    q = "Where was Tim in the week before 16 November 2023?"
+    assert extract_query_anchor(q) == "the week before 16 November 2023"
+
+
+def test_extract_query_anchor_finds_anchor_relative_phrase():
+    assert extract_query_anchor("What did I do last week?") == "last week"
+
+
+def test_extract_query_anchor_returns_none_for_a_pure_asking_for_date_question():
+    # Real LoCoMo phrasing: no date is present, the question is asking for one.
+    assert extract_query_anchor("When did Caroline go to the LGBTQ support group?") is None
+
+
+def test_extract_query_anchor_does_not_match_a_bare_number_in_prose():
+    # _ABS_YEAR stays fullmatch-only in resolve() itself (a stray 4-digit
+    # number in prose is a false-positive risk) -- extraction must not
+    # loosen that guard just because it now searches instead of fullmatches.
+    assert extract_query_anchor("I have 2023 dollars saved") is None
+
+
+def test_extract_query_anchor_prefers_the_before_after_qualifier_over_the_bare_date_within_it():
+    # If a smaller absolute-date pattern matched first inside "the week
+    # before 16 November 2023", it would grab just "16 November 2023" and
+    # silently drop the qualifier that changes its meaning.
+    q = "Where was Tim in the week before 16 November 2023?"
+    span = extract_query_anchor(q)
+    assert span is not None and "before" in span
+
+
+# --- query-side resolution (extract + resolve, anchor-optional) ------------
+
+def test_resolve_query_anchor_absolute_date_needs_no_anchor():
+    r = resolve_query_anchor("What did John attend with his colleagues in March 2023?", None)
+    assert r is not None
+    assert _iso(r) == ("2023-03-01", "2023-03-31")
+
+
+def test_resolve_query_anchor_anchor_relative_is_unresolved_without_a_real_anchor():
+    # Conservative: an anchor-relative phrase with no question_date to
+    # anchor against must never guess -- this matches real LoCoMo, which
+    # never supplies question_date at all.
+    assert resolve_query_anchor("What did I do last week?", None) is None
+
+
+def test_resolve_query_anchor_anchor_relative_resolves_when_a_real_anchor_is_given():
+    r = resolve_query_anchor("What did I do last week?", _ANCHOR)
+    assert r is not None
+    assert _iso(r) == _iso(resolve("last week", _ANCHOR))
+
+
+def test_resolve_query_anchor_returns_none_when_nothing_extracted():
+    assert resolve_query_anchor("How are you feeling about the trip?", _ANCHOR) is None
+
+
+# --- question_date -> anchor date (lenient, fail-safe) ---------------------
+
+def test_parse_anchor_date_accepts_iso_format():
+    assert parse_anchor_date("2023-05-10") == date(2023, 5, 10)
+
+
+def test_parse_anchor_date_accepts_an_iso_datetime_prefix():
+    assert parse_anchor_date("2023-05-10T14:00:00Z") == date(2023, 5, 10)
+
+
+def test_parse_anchor_date_accepts_the_resolver_absolute_date_formats():
+    assert parse_anchor_date("10 May 2023") == date(2023, 5, 10)
+    assert parse_anchor_date("May 10, 2023") == date(2023, 5, 10)
+
+
+def test_parse_anchor_date_returns_none_for_unparseable_text():
+    assert parse_anchor_date("sometime in the spring") is None
+
+
+def test_parse_anchor_date_returns_none_for_none_or_empty():
+    assert parse_anchor_date(None) is None
+    assert parse_anchor_date("") is None
