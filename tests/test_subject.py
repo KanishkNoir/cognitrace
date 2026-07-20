@@ -6,6 +6,7 @@ from __future__ import annotations
 from cognitrace.harness.schema import Session, Turn
 from cognitrace.subject.measure import measure_conversation
 from cognitrace.subject.normalizer import (
+    build_subject_key,
     find_relation_name_comentions,
     find_relation_phrases,
     normalize_subject,
@@ -52,6 +53,43 @@ def test_third_person_possessive_relation_is_unresolved():
 def test_empty_reference_is_unresolved():
     assert normalize_subject("", "Maya", "Rob") is None
     assert normalize_subject("   ", "Maya", "Rob") is None
+
+
+# --- build_subject_key (Sprint 4.3: the key exact-key supersession runs on) --
+
+def test_build_subject_key_composes_entity_and_attribute():
+    assert build_subject_key("I", "pet_name", "Maya", "Rob") == "maya:pet_name"
+
+
+def test_build_subject_key_collapses_paraphrase_variants_to_the_same_key():
+    # "I" and the speaker's own name both resolve to the same entity --
+    # exact-key supersession depends on this collapsing to one key.
+    k1 = build_subject_key("I", "pet_name", "Maya", "Rob")
+    k2 = build_subject_key("my", "pet_name", "Maya", "Rob")
+    assert k1 == k2 == "maya:pet_name"
+
+
+def test_build_subject_key_differs_by_attribute():
+    k1 = build_subject_key("I", "pet_name", "Maya", "Rob")
+    k2 = build_subject_key("I", "job", "Maya", "Rob")
+    assert k1 != k2
+
+
+def test_build_subject_key_differs_by_subject():
+    k1 = build_subject_key("I", "pet_name", "Maya", "Rob")
+    k2 = build_subject_key("you", "pet_name", "Maya", "Rob")
+    assert k1 != k2
+
+
+def test_build_subject_key_relation_compound_carries_attribute():
+    assert build_subject_key("my sister", "job", "Maya", "Rob") == "maya:sister:job"
+
+
+def test_build_subject_key_is_none_when_subject_unresolved():
+    # Conservative: an unresolved reference must never collapse onto a
+    # colliding placeholder key -- None propagates, it is never invented.
+    assert build_subject_key("she", "pet_name", "Maya", "Rob") is None
+    assert build_subject_key("her sister", "job", "Maya", "Rob") is None
 
 
 # --- self-revealing co-mention extraction ------------------------------

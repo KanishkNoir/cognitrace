@@ -91,6 +91,18 @@ def _resolve_possessive(possessive: str, speaker: str, other_speaker: str) -> st
     return None
 
 
+def build_subject_key(reference: str, attribute: str, speaker: str, other_speaker: str) -> str | None:
+    """Compose the compound key exact-key supersession (Sprint 4.3) runs
+    on: the entity `normalize_subject` resolves, plus `attribute`. Two
+    facts collapse onto the same live record iff they share both -- an
+    unresolved reference (None) must never be papered over with a shared
+    placeholder, since that would silently collide unrelated subjects."""
+    subject = normalize_subject(reference, speaker, other_speaker)
+    if subject is None:
+        return None
+    return f"{subject}:{attribute}"
+
+
 def find_relation_name_comentions(text: str) -> list[tuple[str, str, str]]:
     """Find `(possessive, relation, name)` triples where a relationship
     phrase and a proper name co-occur in the same breath ("my sister

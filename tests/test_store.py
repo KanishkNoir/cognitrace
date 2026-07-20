@@ -20,6 +20,7 @@ from cognitrace.store.ingest import (
 )
 from cognitrace.store.rebuild import rebuild_from_raw, record_replay_baseline
 from cognitrace.store.schema import open_store
+from cognitrace.subject.normalizer import build_subject_key
 
 
 def _fresh_store(tmp_path):
@@ -155,6 +156,72 @@ def test_event_dated_never_supersedes(tmp_path):
     ).fetchall()
     assert len(rows) == 2
     assert all(r["valid_to"] is None for r in rows)  # both remain live: episodic, not stateful
+
+
+# --- Sprint 4.3: exact-key supersession through the real normalizer --------
+# Unlike the tests above (which pass literal subject_key strings), these
+# route through build_subject_key/normalize_subject -- proving the 4.2
+# normalizer composes into a key that Sprint 3's exact-key supersession
+# mechanism actually links on, without needing the (not-yet-built) encoder.
+
+def _extract_via_normalizer(reference, attribute, value, speaker, other_speaker):
+    def _fn(content):
+        key = build_subject_key(reference, attribute, speaker, other_speaker)
+        if key is None:
+            return []  # conservative: never mint an event on a colliding placeholder
+        return [ExtractedEvent(type="FACT", subject_key=key, attribute=attribute, value=value)]
+    return _fn
+
+
+def test_paraphrased_subject_references_collapse_and_supersede(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="I have a dog named Rex.", mention_time="2023-05-05T13:00:00Z",
+                extract_fn=_extract_via_normalizer("I", "pet_name", "Rex", "Maya", "Rob"))
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t2", session_id="s1", role="Maya",
+                content="My dog is actually named Max.", mention_time="2023-06-01T09:00:00Z",
+                extract_fn=_extract_via_normalizer("my", "pet_name", "Max", "Maya", "Rob"))
+    rows = conn.execute(
+        "SELECT value, valid_to FROM memory_records WHERE subject_key='maya:pet_name' ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["value"] == "Rex" and rows[0]["valid_to"] is not None
+    assert rows[1]["value"] == "Max" and rows[1]["valid_to"] is None
+    assert run_doctor(conn) == [] or [v for v in run_doctor(conn) if v.code != "I7"] == []
+
+
+def test_different_attribute_via_normalizer_does_not_supersede(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+                content="I have a dog named Rex.", mention_time=None,
+                extract_fn=_extract_via_normalizer("I", "pet_name", "Rex", "Maya", "Rob"))
+    ingest_turn(conn, extractor_version_id=ev_id, turn_id="t2", session_id="s1", role="Maya",
+                content="I'm a teacher.", mention_time=None,
+                extract_fn=_extract_via_normalizer("I", "job", "teacher", "Maya", "Rob"))
+    live = conn.execute(
+        "SELECT subject_key, value FROM memory_records WHERE valid_to IS NULL ORDER BY subject_key"
+    ).fetchall()
+    assert [(r["subject_key"], r["value"]) for r in live] == [
+        ("maya:job", "teacher"), ("maya:pet_name", "Rex"),
+    ]
+
+
+def test_unresolved_subject_reference_mints_no_event(tmp_path):
+    conn = _fresh_store(tmp_path)
+    ev_id = _verified_extractor(conn)
+    result = ingest_turn(
+        conn, extractor_version_id=ev_id, turn_id="t1", session_id="s1", role="Maya",
+        content="Her sister is a teacher.", mention_time=None,
+        # "her sister" needs coreference the v0 normalizer doesn't do -- key is None.
+        extract_fn=_extract_via_normalizer("her sister", "job", "teacher", "Maya", "Rob"),
+    )
+    assert result.status == "ok"
+    assert result.event_ids == []
+    n_records = conn.execute("SELECT COUNT(*) c FROM memory_records").fetchone()["c"]
+    assert n_records == 0
+    assert [v for v in run_doctor(conn) if v.code != "I7"] == []
 
 
 # --- structural invariant I2 (partial unique index, not app logic) ----------
